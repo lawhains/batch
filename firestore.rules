@@ -1,0 +1,23 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users — only read/write your own doc
+    match /users/{userId} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Deals — anyone can read, only auth users can create
+    match /deals/{dealId} {
+      allow read: if true;
+      allow create: if request.auth != null;
+      allow update: if request.auth.uid == resource.data.organizerId;
+    }
+
+    // Commitments — only owner can read their own commitment
+    match /commitments/{commitmentId} {
+      allow read, write: if request.auth.uid == resource.data.userId;
+    }
+  }
+}
