@@ -102,17 +102,17 @@ This mirrors real production payment architecture.
 Batch uses a monorepo structure where the Expo app serves as the frontend and Firebase Cloud Functions serve as the backend. While both live in the same repository, they are deployed and executed independently.
 
 ### Monorepo Structure
-'''
+```
 batch/
 ├── src/              # Expo frontend application
 ├── functions/        # Firebase Cloud Functions backend
 ├── firestore.rules   # Firestore security rules
 ├── firebase.json     # Firebase deployment configuration
-'''
+```
 
 ## System Architecture Diagram
 Brief text-based overview (flows from top-down):
-'''
+```
 Expo App (Client)
         |
 Reads/Writes Firestore (Database)
@@ -120,7 +120,7 @@ Reads/Writes Firestore (Database)
 Triggers Cloud Functions (Server)
         |
 Calls Stripe API (Payments)
-'''
+```
 
 ### Flow Explanation
 1. User interacts with Expo app
@@ -133,9 +133,9 @@ Calls Stripe API (Payments)
 - Update Firestone securely
 
 ## File Structure
-'''
+```
 /src
-'''
+```
 Frontend React Native app.
 - app/ -> Routes and screens
 - components/ -> Reusable UI components
@@ -144,9 +144,9 @@ Frontend React Native app.
 - types/ -> TypeScript interfaces
 - constants/ -> Static configuration
 
-'''
+```
 /functions
-'''
+```
 Backend logic.
 - index.js -> Cloud Function entry point
 - Handles:
