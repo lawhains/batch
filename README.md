@@ -196,5 +196,3 @@ Once deployed, a test account will be provided so reviewers can:
 - Create and join group orders
 - Experience pricing and order logic
 - See secure payment flow simulation
-
-This goal highlights not just coding ability, but also the ability to take a project from development to production.
