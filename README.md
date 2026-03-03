@@ -27,7 +27,7 @@ Consequently, batch explores:
 
 My inital goal is to simulate how a real-world collaborative commerce platform might operate.
 
-## Tech Stack (With Detailed Explanation)
+## Tech Stack
 This project uses a modern serverless full-stack architecture.
 
 ### Frontend: Expo, React Native, and TypeScript
