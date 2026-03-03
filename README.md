@@ -183,7 +183,7 @@ Backend logic.
 ## Live Demo / Deployment Goal
 One of the main goals for Batch is to provide a **clickable, fully hosted version** of the app that anyone can try without installing anything locally.  
 
-Currently, the app is configured to run as a **web application via Expo** and will be deployed to **Firebase Hosting**, providing a permanent, publicly accessible URL.  
+Currently, the app is configured to run as a **web application via Expo** and will be deployed to **Firebase Hosting**, providing a permanent, publicly accessible URL.
 
 This deployment demonstrates:
 - Frontend + backend integration
