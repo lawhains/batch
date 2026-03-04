@@ -21,9 +21,9 @@ The idea came from a genuine frustration: bulk purchasing platforms offer better
 | User registration + login | Complete |
 | Auth guard + session persistence | Complete |
 | Firestore user profiles | Complete |
-| Feed screen | Skeleton (UI done, Firestore listener pending) |
-| Deal creation | In progress |
-| Deal joining + commitments | Planned |
+| Feed screen | Complete |
+| Deal creation | Complete |
+| Deal joining + commitments | Complete (client-side; Cloud Functions will handle locking) |
 | Cloud Functions (deal locking, payments) | Planned |
 | Stripe integration | Planned |
 | Deployment (Firebase Hosting) | Planned |

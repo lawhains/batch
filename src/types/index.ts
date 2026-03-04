@@ -21,6 +21,11 @@ export interface Commitment {
   id: string
   dealId: string
   userId: string
-  paymentIntentId: string
-  status: 'held' | 'charged' | 'released'
+  joinedAt: Date
+  paymentIntentId?: string  // set by Cloud Function once Stripe is integrated
+  status: 'pending' | 'held' | 'charged' | 'released'
+  // 'pending' = joined but no payment yet (pre-Stripe phase)
+  // 'held'    = Stripe payment authorised but not captured
+  // 'charged' = deal locked and payment captured
+  // 'released'= deal fell through and auth was cancelled
 }

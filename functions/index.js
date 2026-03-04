@@ -1,32 +1,13 @@
-/**
- * Import function triggers from their respective submodules:
- *
- * const {onCall} = require("firebase-functions/v2/https");
- * const {onDocumentWritten} = require("firebase-functions/v2/firestore");
- *
- * See a full list of supported triggers at https://firebase.google.com/docs/functions
- */
+// Firebase Cloud Functions — backend logic for Batch
+//
+// Nothing is deployed here yet. The first functions will handle:
+//   1. Deal locking  — triggered when currentBuyers >= minBuyers, or when the deadline passes
+//   2. Stripe        — creating payment intents server-side and capturing/releasing them
+//
+// Using Cloud Functions for these instead of client-side code means the Stripe secret key
+// never touches the app, and business rules can't be bypassed by a crafty REST API call.
 
-const {setGlobalOptions} = require("firebase-functions");
-const {onRequest} = require("firebase-functions/https");
-const logger = require("firebase-functions/logger");
+const { setGlobalOptions } = require('firebase-functions')
 
-// For cost control, you can set the maximum number of containers that can be
-// running at the same time. This helps mitigate the impact of unexpected
-// traffic spikes by instead downgrading performance. This limit is a
-// per-function limit. You can override the limit for each function using the
-// `maxInstances` option in the function's options, e.g.
-// `onRequest({ maxInstances: 5 }, (req, res) => { ... })`.
-// NOTE: setGlobalOptions does not apply to functions using the v1 API. V1
-// functions should each use functions.runWith({ maxInstances: 10 }) instead.
-// In the v1 API, each function can only serve one request per container, so
-// this will be the maximum concurrent request count.
-setGlobalOptions({ maxInstances: 10 });
-
-// Create and deploy your first functions
-// https://firebase.google.com/docs/functions/get-started
-
-// exports.helloWorld = onRequest((request, response) => {
-//   logger.info("Hello logs!", {structuredData: true});
-//   response.send("Hello from Firebase!");
-// });
+// Cap concurrent instances to keep costs predictable during development
+setGlobalOptions({ maxInstances: 10 })

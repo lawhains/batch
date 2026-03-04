@@ -61,6 +61,10 @@ export default function RootLayout() {
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="(auth)/login" options={{ headerShown: false }} />
       <Stack.Screen name="(auth)/register" options={{ headerShown: false }} />
+      {/* Header shown here — gives a back arrow to the feed automatically */}
+      <Stack.Screen name="create-deal" options={{ title: 'New Deal' }} />
+      {/* Dynamic route — Expo Router maps deal/[id].tsx to this pattern */}
+      <Stack.Screen name="deal/[id]" options={{ title: 'Deal Details' }} />
     </Stack>
   )
 }
