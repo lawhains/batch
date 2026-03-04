@@ -1,198 +1,94 @@
 # Batch
-An **in-progress** collaborative bulk-buying app built to learn and understand full-stack development from client to cloud.
-Built with Expo (React Native) and Firebase using a monorepo architecture.
 
-## Project Purpose
+A collaborative bulk-buying app, currently in active development. Built as my first full-stack project to understand how real applications are structured from the client all the way to the cloud.
 
-### Why I am Building This
-Batch is my first full-stack application. I built it to:
-- Learn how frotend and backend systems interact and work together
-- Understand authentication and authorization flows
-- Design a real-world database schema
-- Implement secure server-side logic
-- Work with cloud infanstructure ("serverless architecture")
-- Deploy a production-style app with separated client/server responsibilities
+**Stack:** React Native (Expo) · Firebase Auth · Firestore · Cloud Functions · Stripe · TypeScript
 
-I intentionally persued this project to move beyond small scripts and explore how modern full-stack applications are structured in industry.
+---
 
-## Inspiration
-The idea of Batch came from my expereience with the inefficiency of individual purchases when buying in bulk. Many platforms offer discounts for high-volume purchases, but coordinating group orders manually is inconvenient.
+## Why I Built This
 
-Consequently, batch explores:
-- Coordinated group purchasing
-- Tiered pricing logic
-- Shared cost calculation
-- Deadline-based order locking
-- Secure payment handling
+I wanted a project that forced me to make real architectural decisions, not just follow a tutorial. Batch gave me a reason to think through auth flows, NoSQL schema design, server-side security, and payment handling as connected problems rather than isolated exercises.
 
-My inital goal is to simulate how a real-world collaborative commerce platform might operate.
+The idea came from a genuine frustration: bulk purchasing platforms offer better prices for high-volume orders, but coordinating a group buy manually is a mess. Batch handles that coordination (grouping buyers, tracking commitments, locking orders at deadlines, and splitting costs).
 
-## Tech Stack
-This project uses a modern serverless full-stack architecture.
+---
 
-### Frontend: Expo, React Native, and TypeScript
+## Current Status
 
-#### Expo
-- Provides a managed React Native environment
-- Simplifies development and deployment
-- Enables cross-platform mobile support
-- Chosen to focus on application logic rather than build tooling
+| Area | Status |
+|---|---|
+| User registration + login | Complete |
+| Auth guard + session persistence | Complete |
+| Firestore user profiles | Complete |
+| Feed screen | Skeleton (UI done, Firestore listener pending) |
+| Deal creation | In progress |
+| Deal joining + commitments | Planned |
+| Cloud Functions (deal locking, payments) | Planned |
+| Stripe integration | Planned |
+| Deployment (Firebase Hosting) | Planned |
 
-#### React Native
-- Component-based UI architecture
-- State management for dynamic group updates
-- Handles client-side form validation and rendering
+---
 
-#### TypeScript
-- Static type checking
-- Improves code reliability and maintainability
-- Encourages better interface and data modeling
+## Architecture
 
-### Backend: Firebase Cloud Functions
+Batch separates client and server responsibilities clearly. The Expo app handles UI and reads non-sensitive data directly from Firestore. Anything sensitive (payments, deal locking, business rule enforcement) goes through Firebase Cloud Functions, which the client can't bypass.
 
-#### Why Use Firebase Cloud Functions?
-- No server to manage
-- Automatic scaling
-- Serverless architecture
-- Tight integration with Firestore and Firebase Auth
-- Secure environment variables for secret keys
-
-Cloud Functions are used to:
-- Handle sensitive operations
-- Perform server-side validation
-- Process payments
-- Lock deals when deadlines expire
-- Enforce pricing logic
-
-All sensitive operations (payment capture, deal locking, Stripe secret key usage) live exclusively in /functions and are never exposed to the client.
-
-### Database: Firestore (NoSQL)
-
-#### Why Firestore?
-- Real-time updates
-- Flexible document-based schema
-- Strong integration with Firebase ecosystem
-- Built-in security rules
-
-Database used to store:
-- Users
-- Groups
-- Bulk orders
-- Order items
-- Membership relationships
-
-### Authentication: Firebase Auth
-Handles:
-- User registration
-- Login
-- Token issuance
-- Secure identity verification
-
-Authentication tokens are validated in Cloud Functions to prevent unauthorized actions.
-
-### Payments: Stripe API (Server-Side Only)
-Stripe integration is handled entirely in Cloud Functions:
-- Secret keys are never exposed to the client
-- Payment intents are created server-side
-- Clients only receive safe payment responses
-
-This mirrors real production payment architecture.
-
-## Architecture Overview
-Batch uses a monorepo structure where the Expo app serves as the frontend and Firebase Cloud Functions serve as the backend. While both live in the same repository, they are deployed and executed independently.
-
-### Monorepo Structure
-```
-batch/
-├── src/              # Expo frontend application
-├── functions/        # Firebase Cloud Functions backend
-├── firestore.rules   # Firestore security rules
-├── firebase.json     # Firebase deployment configuration
-```
-
-## System Architecture Diagram
-Brief text-based overview (flows from top-down):
 ```
 Expo App (Client)
-        |
-Reads/Writes Firestore (Database)
-        |
-Triggers Cloud Functions (Server)
-        |
-Calls Stripe API (Payments)
+      │
+      ├── Reads/writes Firestore directly (non-sensitive data)
+      │
+      └── Calls Cloud Functions via HTTPS (sensitive operations)
+                │
+                └── Calls Stripe API (server-side only)
 ```
 
-### Flow Explanation
-1. User interacts with Expo app
-2. App reads/writes non-sensitive data to Firestone
-3. Sensitivie actions trigger HTTPS Cloud Functions
-4. Cloud Functions:
-- Validate authentication tokens
-- Perform business logic
-- Interact with Stripe
-- Update Firestone securely
-
-## File Structure
 ```
-/src
+batch/
+├── src/                  # Expo frontend
+│   ├── app/              # File-based routes (Expo Router)
+│   ├── components/       # Reusable UI components
+│   ├── services/         # Firebase config and initialisation
+│   └── types/            # Shared TypeScript interfaces
+├── functions/            # Firebase Cloud Functions (backend)
+├── firestore.rules       # Firestore security rules
+└── firebase.json         # Firebase deployment config
 ```
-Frontend React Native app.
-- app/ -> Routes and screens
-- components/ -> Reusable UI components
-- services/firebase.ts -> Firebase configuration
-- hooks/ -> Custom React hooks
-- types/ -> TypeScript interfaces
-- constants/ -> Static configuration
 
-```
-/functions
-```
-Backend logic.
-- index.js -> Cloud Function entry point
-- Handles:
-- - Payment processing
-- - Deal locking
-- - Sensitive validation
-- - Server-side business rules
+---
 
-## Key Features
-- User authentication
-- Group creation and joining
-- Tiered pricing logic
-- Automatic deal locking
-- Secure payment handling
-- Server-side validation
-- Firestore security rules enforcement
+## Tech Stack
 
-## Security Considerations
-- Firestore rules restrict unauthorized reads/writes
-- All secret keys stored in environment variables
-- Payment processing handled server-side only
-- Authentication tokens verified before sensitive actions
-- No sensitive logic executed on client
+**Frontend: Expo + React Native + TypeScript**
+Expo's managed environment let me focus on application logic rather than build tooling. TypeScript enforced consistent data shapes across the client and helped catch integration errors early.
 
-## Learning Goals
-- Full-stack request lifecycle
-- Serverless backend architecture
-- Designing NoSQL schemas
-- Security rule enforcement
-- Handling asynchronous operations
-- Separating client vs server responsibilities
-- Managing environment variables safely
+**Database: Firestore**
+Chosen for its real-time `onSnapshot` listeners (deals update live without polling) and its tight integration with Firebase Auth, where security rules can reference the authenticated user directly.
 
-## Live Demo / Deployment Goal
-One of the main goals for Batch is to provide a **clickable, fully hosted version** of the app that anyone can try without installing anything locally.
+**Auth: Firebase Auth**
+Handles registration, login, token issuance, and session persistence. Tokens are verified server-side in Cloud Functions before any sensitive operation runs.
 
-Currently, the app is configured to run as a **web application via Expo** and will be deployed to **Firebase Hosting**, providing a permanent, publicly accessible URL.
+**Backend: Firebase Cloud Functions**
+Serverless functions handle everything the client shouldn't touch: payment capture, deal locking when deadlines expire, and pricing logic. The Stripe secret key never leaves the server.
 
-This deployment demonstrates:
-- Frontend + backend integration
-- Serverless architecture with Cloud Functions
-- Proper authentication and security in a deployed environment
-- Real-world project delivery, similar to professional software development
+**Payments: Stripe**
+Payment intents are created server-side and only the client secret is returned to the app. This mirrors how production payment flows actually work.
 
-Once deployed, a test account will be provided so reviewers can:
-- Sign in
-- Create and join group orders
-- Experience pricing and order logic
-- See secure payment flow simulation
+---
+
+## Security Decisions Worth Noting
+
+A few deliberate choices made during development:
+
+- **Generic auth error messages:** login returns "Incorrect email or password" regardless of which field is wrong. Separate messages would allow someone to enumerate which emails are registered.
+- **Email trimming, not password trimming:** trailing whitespace on an email causes a silent auth failure; trailing spaces in a password are valid and intentionally preserved.
+- **Partial registration cleanup:** if Firebase Auth succeeds but the Firestore profile write fails, the user is immediately signed out rather than left in a broken half-registered state.
+- **Stripe secret key server-side only:** the key lives in Cloud Function environment variables and is never referenced in client code.
+- **Firestore security rules:** reads and writes are locked to authenticated users, with ownership checks (e.g. only the deal organiser can update a deal).
+
+---
+
+## Deployment Goal
+
+The end goal is a publicly hosted web version (via Firebase Hosting) with a test account so anyone can try it without setting up locally. This also means the Cloud Functions, Firestore rules, and Stripe test mode all need to be in a production-ready state, not just working in dev.
