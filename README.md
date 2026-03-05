@@ -24,6 +24,7 @@ The idea came from a genuine frustration: bulk purchasing platforms offer better
 | Feed screen | Complete |
 | Deal creation | Complete |
 | Deal joining + commitments | Complete (client-side; Cloud Functions will handle locking) |
+| My Deals screen | Complete |
 | Cloud Functions (deal locking, payments) | Planned |
 | Stripe integration | Planned |
 | Deployment (Firebase Hosting) | Planned |
@@ -85,7 +86,7 @@ A few deliberate choices made during development:
 - **Email trimming, not password trimming:** trailing whitespace on an email causes a silent auth failure; trailing spaces in a password are valid and intentionally preserved.
 - **Partial registration cleanup:** if Firebase Auth succeeds but the Firestore profile write fails, the user is immediately signed out rather than left in a broken half-registered state.
 - **Stripe secret key server-side only:** the key lives in Cloud Function environment variables and is never referenced in client code.
-- **Firestore security rules:** reads and writes are locked to authenticated users, with ownership checks (e.g. only the deal organiser can update a deal).
+- **Firestore security rules:** reads and writes are locked to authenticated users, with ownership checks on sensitive operations. Deal updates are split into two separate rules: one for the organiser (broad, for status changes) and one for joiners (locked to incrementing `currentBuyers` by exactly 1 on an open deal, touching no other fields).
 
 ---
 

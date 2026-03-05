@@ -92,9 +92,14 @@ export default function FeedScreen() {
         <Text style={styles.greeting}>
           Hey, {user?.displayName ?? 'there'}
         </Text>
-        <TouchableOpacity onPress={handleSignOut}>
-          <Text style={styles.signOutText}>Sign out</Text>
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity onPress={() => router.push('/my-deals')}>
+            <Text style={styles.headerAction}>My deals</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleSignOut}>
+            <Text style={styles.headerAction}>Sign out</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Deal list */}
@@ -153,7 +158,11 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '600',
   },
-  signOutText: {
+  headerActions: {
+    flexDirection: 'row',
+    gap: 16,
+  },
+  headerAction: {
     color: '#FF6B35',
     fontSize: 14,
   },

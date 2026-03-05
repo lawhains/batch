@@ -65,6 +65,7 @@ export default function RootLayout() {
       <Stack.Screen name="create-deal" options={{ title: 'New Deal' }} />
       {/* Dynamic route — Expo Router maps deal/[id].tsx to this pattern */}
       <Stack.Screen name="deal/[id]" options={{ title: 'Deal Details' }} />
+      <Stack.Screen name="my-deals" options={{ title: 'My Deals' }} />
     </Stack>
   )
 }
