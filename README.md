@@ -23,10 +23,11 @@ The idea came from a genuine frustration: bulk purchasing platforms offer better
 | Firestore user profiles | Complete |
 | Feed screen | Complete |
 | Deal creation | Complete |
-| Deal joining + commitments | Complete (client-side; Cloud Functions will handle locking) |
+| Deal joining + commitments | Complete |
+| Deal leaving | Complete |
 | My Deals screen | Complete |
-| Cloud Functions (deal locking, payments) | Planned |
-| Stripe integration | Planned |
+| Cloud Functions (deal locking) | Complete |
+| Stripe integration + payment functions | Planned |
 | Deployment (Firebase Hosting) | Planned |
 
 ---
@@ -86,7 +87,8 @@ A few deliberate choices made during development:
 - **Email trimming, not password trimming:** trailing whitespace on an email causes a silent auth failure; trailing spaces in a password are valid and intentionally preserved.
 - **Partial registration cleanup:** if Firebase Auth succeeds but the Firestore profile write fails, the user is immediately signed out rather than left in a broken half-registered state.
 - **Stripe secret key server-side only:** the key lives in Cloud Function environment variables and is never referenced in client code.
-- **Firestore security rules:** reads and writes are locked to authenticated users, with ownership checks on sensitive operations. Deal updates are split into two separate rules: one for the organiser (broad, for status changes) and one for joiners (locked to incrementing `currentBuyers` by exactly 1 on an open deal, touching no other fields).
+- **Firestore security rules:** reads and writes are locked to authenticated users, with ownership checks on sensitive operations. Deal updates use three separate rules: organiser edits (title, price, etc. but not status), joiner increments (`currentBuyers` +1 on open deals only), and leaver decrements (`currentBuyers` -1 on open deals only). Status changes are blocked from the client entirely and owned by Cloud Functions.
+- **Cloud Function-owned status:** the deal locking logic lives in Cloud Functions rather than client code, so status transitions (`open` → `locked` / `expired`) can't be triggered by a crafty API call. When Stripe is integrated, payment capture will live in the same functions.
 
 ---
 

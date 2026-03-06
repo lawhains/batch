@@ -33,8 +33,8 @@ export default function RootLayout() {
   // Re-run the redirect check whenever auth state or the active route changes.
   // This handles three cases:
   //   - App cold start: wait for authReady, then redirect if needed
-  //   - Sign in: user becomes non-null while on an auth screen → go to feed
-  //   - Sign out: user becomes null while on a protected screen → go to login
+  //   - Sign in: user becomes non-null while on an auth screen -> go to feed
+  //   - Sign out: user becomes null while on a protected screen -> go to login
   useEffect(() => {
     if (!authReady) return
 

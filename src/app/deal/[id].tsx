@@ -1,38 +1,33 @@
-// Deal detail screen — shows full info about a single deal and lets users join it.
+// Deal detail screen — shows full info about a single deal and handles three actions:
+//   Join  — Firestore transaction (commitment doc + currentBuyers increment)
+//   Leave — Firestore transaction (delete commitment + currentBuyers decrement), open deals only
+//   Lock  — callable Cloud Function (organiser only, once minBuyers is met)
 //
 // Two real-time listeners run in parallel:
-//   1. The deal doc   — so buyer count, status, and deadline stay live
-//   2. The user's own commitment doc — so the Join button reflects the current state
-//      without needing an extra query (the doc ID is predictable: `${dealId}_${userId}`)
-//
-// Joining uses a Firestore transaction to atomically:
-//   1. Confirm the deal is still open and not full
-//   2. Confirm the user hasn't already joined
-//   3. Write the commitment doc
-//   4. Increment currentBuyers on the deal
-//
-// All of this could be bypassed by hitting the REST API directly, so the Firestore
-// security rules enforce the same constraints server-side.
+//   1. The deal doc        — keeps buyer count, status, and deadline live
+//   2. The commitment doc  — tells us instantly if the current user has joined
+//      (doc ID is predictable: `${dealId}_${userId}`, so no query needed)
 
 import { useState, useEffect } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView } from 'react-native'
 import { doc, onSnapshot, runTransaction, Timestamp } from 'firebase/firestore'
+import { httpsCallable } from 'firebase/functions'
+import { FirebaseError } from 'firebase/app'
 import { useLocalSearchParams, router } from 'expo-router'
-import { auth, db } from '@/services/firebase'
+import { auth, db, functions } from '@/services/firebase'
 import type { Deal } from '@/types'
 
 export default function DealDetailScreen() {
 
-  // Expo Router puts dynamic segment values in useLocalSearchParams
   const { id } = useLocalSearchParams<{ id: string }>()
-
-  // Safe to assert non-null — auth guard in _layout.tsx ensures a user is signed in
   const uid = auth.currentUser!.uid
 
   const [deal, setDeal] = useState<Deal | null>(null)
   const [alreadyJoined, setAlreadyJoined] = useState(false)
   const [loading, setLoading] = useState(true)
   const [joining, setJoining] = useState(false)
+  const [leaving, setLeaving] = useState(false)
+  const [locking, setLocking] = useState(false)
   const [error, setError] = useState('')
 
   // ── Listener 1: deal doc ──────────────────────────────────────────────────
@@ -51,7 +46,6 @@ export default function DealDetailScreen() {
         setDeal({
           ...data,
           id: snap.id,
-          // Firestore Timestamps need converting — same pattern as the feed screen
           deadline: data.deadline?.toDate() ?? new Date(),
         } as Deal)
         setLoading(false)
@@ -69,11 +63,7 @@ export default function DealDetailScreen() {
   useEffect(() => {
     if (!id) return
 
-    // The commitment doc ID is `${dealId}_${userId}` — a predictable compound key.
-    // This means we can listen to it directly rather than querying the collection,
-    // and it also naturally prevents one user from joining the same deal twice.
     const commitmentRef = doc(db, 'commitments', `${id}_${uid}`)
-
     const unsubscribe = onSnapshot(commitmentRef, (snap) => {
       setAlreadyJoined(snap.exists())
     })
@@ -81,7 +71,7 @@ export default function DealDetailScreen() {
     return unsubscribe
   }, [id, uid])
 
-  // ── Join handler ──────────────────────────────────────────────────────────
+  // ── Join ──────────────────────────────────────────────────────────────────
   const handleJoin = async () => {
     if (!deal) return
     setJoining(true)
@@ -92,8 +82,6 @@ export default function DealDetailScreen() {
       const commitmentRef = doc(db, 'commitments', `${id}_${uid}`)
 
       await runTransaction(db, async (transaction) => {
-        // Read both docs inside the transaction so the checks and writes are atomic.
-        // If another user joins between our read and write, Firestore retries automatically.
         const dealSnap = await transaction.get(dealRef)
         const commitmentSnap = await transaction.get(commitmentRef)
 
@@ -102,29 +90,20 @@ export default function DealDetailScreen() {
 
         const data = dealSnap.data()
         if (data.status !== 'open') throw new Error('deal-closed')
-        // maxBuyers is optional — only enforce the cap if the organiser set one
         if (data.maxBuyers !== undefined && data.currentBuyers >= data.maxBuyers) {
           throw new Error('deal-full')
         }
 
-        // Write the commitment first, then update the deal count
         transaction.set(commitmentRef, {
           dealId: id,
           userId: uid,
           joinedAt: Timestamp.now(),
-          status: 'pending', // no payment yet — Stripe integration comes later
+          status: 'pending',
         })
-
-        transaction.update(dealRef, {
-          currentBuyers: data.currentBuyers + 1,
-        })
+        transaction.update(dealRef, { currentBuyers: data.currentBuyers + 1 })
       })
 
-      // No manual state update needed — the onSnapshot listeners above will fire
-      // and update alreadyJoined + deal.currentBuyers automatically
-
     } catch (e) {
-      // Map internal error codes to user-friendly messages
       if (e instanceof Error) {
         if (e.message === 'already-joined') setError('You have already joined this deal.')
         else if (e.message === 'deal-closed') setError('This deal is no longer open.')
@@ -135,6 +114,71 @@ export default function DealDetailScreen() {
       }
     } finally {
       setJoining(false)
+    }
+  }
+
+  // ── Leave ─────────────────────────────────────────────────────────────────
+  // Mirror of joining — deletes the commitment and decrements currentBuyers atomically.
+  // Only possible while the deal is still open (once locked, you're committed).
+  const handleLeave = async () => {
+    if (!deal) return
+    setLeaving(true)
+    setError('')
+
+    try {
+      const dealRef = doc(db, 'deals', id)
+      const commitmentRef = doc(db, 'commitments', `${id}_${uid}`)
+
+      await runTransaction(db, async (transaction) => {
+        const dealSnap = await transaction.get(dealRef)
+        const commitmentSnap = await transaction.get(commitmentRef)
+
+        if (!dealSnap.exists()) throw new Error('deal-not-found')
+        if (!commitmentSnap.exists()) throw new Error('not-joined')
+
+        const data = dealSnap.data()
+        // Double-check inside the transaction — the deal could have locked
+        // between the user tapping Leave and this read
+        if (data.status !== 'open') throw new Error('deal-locked')
+
+        transaction.delete(commitmentRef)
+        transaction.update(dealRef, { currentBuyers: data.currentBuyers - 1 })
+      })
+
+    } catch (e) {
+      if (e instanceof Error) {
+        if (e.message === 'deal-locked') setError('This deal has already locked — you can\'t leave now.')
+        else if (e.message === 'not-joined') setError('You are not in this deal.')
+        else setError('Failed to leave. Please try again.')
+      } else {
+        setError('Failed to leave. Please try again.')
+      }
+    } finally {
+      setLeaving(false)
+    }
+  }
+
+  // ── Lock Deal (organiser only) ────────────────────────────────────────────
+  // Calls the lockDeal Cloud Function rather than writing Firestore directly —
+  // the security rules block client-side status changes, and server-side locking
+  // is where Stripe payment capture will eventually live.
+  const handleLockDeal = async () => {
+    setLocking(true)
+    setError('')
+
+    try {
+      const lockDeal = httpsCallable(functions, 'lockDeal')
+      await lockDeal({ dealId: id })
+      // onSnapshot will pick up the status change automatically
+    } catch (e) {
+      // FirebaseError.message contains the human-readable string thrown by the function
+      if (e instanceof FirebaseError) {
+        setError(e.message)
+      } else {
+        setError('Failed to lock deal. Please try again.')
+      }
+    } finally {
+      setLocking(false)
     }
   }
 
@@ -159,13 +203,14 @@ export default function DealDetailScreen() {
   }
 
   // ── Derived display values ────────────────────────────────────────────────
-  const isClosed = deal.status !== 'open'
-  const isFull = deal.maxBuyers !== undefined && deal.currentBuyers >= deal.maxBuyers
+  const isOrganizer = deal.organizerId === uid
+  const isClosed    = deal.status !== 'open'
+  const isFull      = deal.maxBuyers !== undefined && deal.currentBuyers >= deal.maxBuyers
+  const canLockEarly = isOrganizer && !isClosed && deal.currentBuyers >= deal.minBuyers
   const buyersNeeded = Math.max(0, deal.minBuyers - deal.currentBuyers)
-  // Progress as a fraction (capped at 1 so the bar never overflows)
-  const progress = Math.min(deal.currentBuyers / deal.minBuyers, 1)
+  const progress     = Math.min(deal.currentBuyers / deal.minBuyers, 1)
 
-  // ── Main render ──────────────────────────────────────────────────────────
+  // ── Main render ───────────────────────────────────────────────────────────
   return (
     <ScrollView contentContainerStyle={styles.container}>
 
@@ -190,17 +235,13 @@ export default function DealDetailScreen() {
           {deal.maxBuyers !== undefined ? ` · max ${deal.maxBuyers}` : ''}
         </Text>
 
-        {/* Visual progress bar toward minBuyers */}
         <View style={styles.progressTrack}>
           <View style={[styles.progressFill, { flex: progress }]} />
-          {/* The remaining unfilled portion — flex: 0 collapses it when full */}
           <View style={{ flex: Math.max(1 - progress, 0) }} />
         </View>
 
         {!isClosed && !isFull && buyersNeeded > 0 && (
-          <Text style={styles.progressHint}>
-            {buyersNeeded} more needed to lock this deal
-          </Text>
+          <Text style={styles.progressHint}>{buyersNeeded} more needed to lock this deal</Text>
         )}
         {isFull && <Text style={styles.progressHint}>Deal is full</Text>}
       </View>
@@ -211,20 +252,54 @@ export default function DealDetailScreen() {
         <Text style={styles.sectionValue}>{deal.deadline.toLocaleDateString()}</Text>
       </View>
 
-      {/* Error message from join attempt */}
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-      {/* Join button — shows different states based on deal and user status */}
+      {/* Organiser controls — only visible to the organiser while the deal is open */}
+      {isOrganizer && !isClosed && (
+        <View style={styles.organizerSection}>
+          <Text style={styles.organizerLabel}>Organiser controls</Text>
+          {canLockEarly ? (
+            <TouchableOpacity
+              style={[styles.lockButton, locking && styles.lockButtonDisabled]}
+              onPress={handleLockDeal}
+              disabled={locking}
+            >
+              {locking
+                ? <ActivityIndicator color="#fff" />
+                : <Text style={styles.lockButtonText}>Lock Deal Now</Text>
+              }
+            </TouchableOpacity>
+          ) : (
+            <Text style={styles.progressHint}>
+              Lock Deal becomes available once {deal.minBuyers} buyers have joined
+            </Text>
+          )}
+        </View>
+      )}
+
+      {/* Participant controls */}
       {alreadyJoined ? (
-        <View style={styles.joinedBanner}>
-          <Text style={styles.joinedBannerText}>You're in!</Text>
+        <View>
+          <View style={styles.joinedBanner}>
+            <Text style={styles.joinedBannerText}>You're in!</Text>
+          </View>
+          {/* Can only leave while the deal is still open */}
+          {!isClosed && (
+            <TouchableOpacity
+              style={styles.leaveButton}
+              onPress={handleLeave}
+              disabled={leaving}
+            >
+              {leaving
+                ? <ActivityIndicator color="#cc0000" size="small" />
+                : <Text style={styles.leaveButtonText}>Leave deal</Text>
+              }
+            </TouchableOpacity>
+          )}
         </View>
       ) : (
         <TouchableOpacity
-          style={[
-            styles.joinButton,
-            (isClosed || isFull || joining) && styles.joinButtonDisabled,
-          ]}
+          style={[styles.joinButton, (isClosed || isFull || joining) && styles.joinButtonDisabled]}
           onPress={handleJoin}
           disabled={isClosed || isFull || joining}
         >
@@ -319,6 +394,35 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 12,
   },
+  organizerSection: {
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    paddingTop: 16,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  organizerLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#aaa',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 10,
+  },
+  lockButton: {
+    backgroundColor: '#333',
+    borderRadius: 8,
+    padding: 16,
+    alignItems: 'center',
+  },
+  lockButtonDisabled: {
+    backgroundColor: '#33333380',
+  },
+  lockButtonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
   joinButton: {
     backgroundColor: '#FF6B35',
     borderRadius: 8,
@@ -345,6 +449,14 @@ const styles = StyleSheet.create({
     color: '#2e7d32',
     fontWeight: '600',
     fontSize: 16,
+  },
+  leaveButton: {
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  leaveButtonText: {
+    color: '#cc0000',
+    fontSize: 14,
   },
   backButton: {
     marginTop: 16,
