@@ -16,6 +16,7 @@ import { FirebaseError } from 'firebase/app'
 import { useLocalSearchParams, router } from 'expo-router'
 import { auth, db, functions } from '@/services/firebase'
 import type { Deal } from '@/types'
+import { mapDeal } from '@/utils/mapDeal'
 
 export default function DealDetailScreen() {
 
@@ -42,12 +43,7 @@ export default function DealDetailScreen() {
           setLoading(false)
           return
         }
-        const data = snap.data()
-        setDeal({
-          ...data,
-          id: snap.id,
-          deadline: data.deadline?.toDate() ?? new Date(),
-        } as Deal)
+        setDeal(mapDeal(snap))
         setLoading(false)
       },
       () => {
@@ -203,10 +199,14 @@ export default function DealDetailScreen() {
   }
 
   // ── Derived display values ────────────────────────────────────────────────
-  const isOrganizer = deal.organizerId === uid
-  const isClosed    = deal.status !== 'open'
-  const isFull      = deal.maxBuyers !== undefined && deal.currentBuyers >= deal.maxBuyers
-  const canLockEarly = isOrganizer && !isClosed && deal.currentBuyers >= deal.minBuyers
+  const isOrganizer  = deal.organizerId === uid
+  const isClosed     = deal.status !== 'open'
+  const isFull       = deal.maxBuyers !== undefined && deal.currentBuyers >= deal.maxBuyers
+  // expireDeals runs hourly, so there's up to a ~59-minute window where a deal's
+  // deadline has passed but its status is still 'open'. This client-side check
+  // closes that gap so the UI reflects the real state immediately.
+  const isPastDeadline = deal.deadline < new Date()
+  const canLockEarly = isOrganizer && !isClosed && !isPastDeadline && deal.currentBuyers >= deal.minBuyers
   const buyersNeeded = Math.max(0, deal.minBuyers - deal.currentBuyers)
   const progress     = Math.min(deal.currentBuyers / deal.minBuyers, 1)
 
@@ -283,8 +283,9 @@ export default function DealDetailScreen() {
           <View style={styles.joinedBanner}>
             <Text style={styles.joinedBannerText}>You're in!</Text>
           </View>
-          {/* Can only leave while the deal is still open */}
-          {!isClosed && (
+          {/* Can only leave while the deal is still open and before the deadline.
+              Once the deadline passes, expireDeals will resolve the deal shortly. */}
+          {!isClosed && !isPastDeadline && (
             <TouchableOpacity
               style={styles.leaveButton}
               onPress={handleLeave}
@@ -299,14 +300,14 @@ export default function DealDetailScreen() {
         </View>
       ) : (
         <TouchableOpacity
-          style={[styles.joinButton, (isClosed || isFull || joining) && styles.joinButtonDisabled]}
+          style={[styles.joinButton, (isClosed || isFull || isPastDeadline || joining) && styles.joinButtonDisabled]}
           onPress={handleJoin}
-          disabled={isClosed || isFull || joining}
+          disabled={isClosed || isFull || isPastDeadline || joining}
         >
           {joining
             ? <ActivityIndicator color="#fff" />
             : <Text style={styles.joinButtonText}>
-                {isClosed ? 'Deal closed' : isFull ? 'Deal full' : 'Join Deal'}
+                {isClosed ? 'Deal closed' : isPastDeadline ? 'Deadline passed' : isFull ? 'Deal full' : 'Join Deal'}
               </Text>
           }
         </TouchableOpacity>

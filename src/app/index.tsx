@@ -9,11 +9,12 @@
 import { useState, useEffect } from 'react'
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native'
 import { signOut } from 'firebase/auth'
-import { collection, query, where, onSnapshot } from 'firebase/firestore'
+import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore'
 import { router } from 'expo-router'
 import { auth, db } from '@/services/firebase'
 import type { Deal } from '@/types'
 import DealCard from '@/components/DealCard'
+import { mapDeal } from '@/utils/mapDeal'
 
 export default function FeedScreen() {
 
@@ -26,27 +27,19 @@ export default function FeedScreen() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    // Query for all open deals. onSnapshot keeps this live — any new deal posted
-    // by any user appears in the list automatically without a page refresh.
-    // Note: adding orderBy('deadline', 'asc') here would require a composite Firestore
-    // index (status + deadline). Skipping for now to avoid index setup overhead.
+    // Query for all open deals, sorted by soonest deadline first.
+    // onSnapshot keeps this live — any new deal posted by any user appears automatically.
+    // This uses the composite index on (status ASC, deadline ASC) defined in
+    // firestore.indexes.json — Firestore would reject the query without it.
     const q = query(
       collection(db, 'deals'),
-      where('status', '==', 'open')
+      where('status', '==', 'open'),
+      orderBy('deadline', 'asc')
     )
 
     const unsubscribe = onSnapshot(q,
       (snapshot) => {
-        const fetched = snapshot.docs.map(doc => {
-          const data = doc.data()
-          return {
-            ...data,
-            id: doc.id,
-            // Firestore returns Timestamps, not JS Dates — convert so the rest of
-            // the app can treat deadline as a plain Date object
-            deadline: data.deadline?.toDate() ?? new Date(),
-          } as Deal
-        })
+        const fetched = snapshot.docs.map(mapDeal)
         setDeals(fetched)
         setLoading(false)
       },

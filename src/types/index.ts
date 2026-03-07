@@ -1,9 +1,5 @@
-export interface User {
-  id: string
-  displayName: string
-  email: string
-  avatarUrl?: string
-}
+// Note: Firebase Auth provides its own User type (import { User } from 'firebase/auth').
+// No custom User interface is needed here — use Firebase's directly.
 
 export interface Deal {
   id: string

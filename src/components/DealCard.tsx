@@ -1,11 +1,9 @@
-// Renders a single deal card in the feed list.
+// Renders a single deal card used in the feed, My Deals, and anywhere deals are listed.
 //
-// Kept as its own component because the card is the natural home for the Join button
-// and buyer-progress display — putting that logic here keeps index.tsx focused on
-// the list itself rather than individual card behaviour.
+// Kept as its own component so list screens (index.tsx, my-deals.tsx) stay focused on
+// data fetching and layout rather than card-level rendering.
 //
 // onPress is provided by the parent and navigates to the deal detail screen.
-// The Join button will also live here once the detail screen exists.
 
 import { Text, TouchableOpacity, StyleSheet } from 'react-native'
 import type { Deal } from '@/types'
@@ -30,8 +28,6 @@ export default function DealCard({ deal, onPress }: Props) {
       <Text style={styles.meta}>
         Closes {deal.deadline.toLocaleDateString()}
       </Text>
-
-      {/* Join button goes here once the deal detail screen is built */}
 
     </TouchableOpacity>
   )

@@ -69,7 +69,8 @@ exports.onDealUpdated = onDocumentUpdated('deals/{dealId}', async (event) => {
 //   - enough buyers joined -> lock it (better late than never)
 //   - not enough buyers   -> expire it (deal falls through)
 //
-// Uses a batch write so all status updates go in one Firestore round trip.
+// Uses batch writes so all status updates go in minimal Firestore round trips.
+// Firestore batches cap at 500 operations, so we chunk to avoid failures at scale.
 //
 // Note: this query uses a composite index on (status ASC, deadline ASC)
 // defined in firestore.indexes.json — Firestore will reject the query without it.
@@ -84,16 +85,22 @@ exports.expireDeals = onSchedule('every 1 hours', async () => {
 
   if (snapshot.empty) return
 
-  const batch = db.batch()
+  // Firestore batch limit is 500 operations. Chunk the docs to stay under the
+  // cap regardless of how many deals expire in a single sweep.
+  const BATCH_LIMIT = 500
+  for (let i = 0; i < snapshot.docs.length; i += BATCH_LIMIT) {
+    const batch = db.batch()
+    const chunk = snapshot.docs.slice(i, i + BATCH_LIMIT)
 
-  snapshot.docs.forEach(doc => {
-    const data = doc.data()
-    // If enough buyers joined before the deadline, honour the deal
-    const newStatus = data.currentBuyers >= data.minBuyers ? 'locked' : 'expired'
-    batch.update(doc.ref, { status: newStatus })
-  })
+    chunk.forEach(doc => {
+      const data = doc.data()
+      // If enough buyers joined before the deadline, honour the deal
+      const newStatus = data.currentBuyers >= data.minBuyers ? 'locked' : 'expired'
+      batch.update(doc.ref, { status: newStatus })
+    })
 
-  await batch.commit()
+    await batch.commit()
+  }
 })
 
 // ── lockDeal ──────────────────────────────────────────────────────────────────
@@ -122,32 +129,39 @@ exports.lockDeal = onCall(async (request) => {
   }
 
   const dealRef = db.collection('deals').doc(dealId)
-  const dealSnap = await dealRef.get()
 
-  if (!dealSnap.exists) {
-    throw new HttpsError('not-found', 'Deal not found.')
-  }
+  // Wrapped in a transaction to prevent TOCTOU (time-of-check-time-of-use) races.
+  // Without this, the deal could change between our read and write — e.g. expireDeals
+  // could expire the deal, or another join could change currentBuyers, between the
+  // read and the update. The transaction ensures our validation and update are atomic.
+  await db.runTransaction(async (t) => {
+    const dealSnap = await t.get(dealRef)
 
-  const deal = dealSnap.data()
+    if (!dealSnap.exists) {
+      throw new HttpsError('not-found', 'Deal not found.')
+    }
 
-  // Only the organiser can lock their own deal
-  if (deal.organizerId !== request.auth.uid) {
-    throw new HttpsError('permission-denied', 'Only the deal organiser can lock the deal.')
-  }
+    const deal = dealSnap.data()
 
-  if (deal.status !== 'open') {
-    throw new HttpsError('failed-precondition', `This deal is already ${deal.status}.`)
-  }
+    // Only the organiser can lock their own deal
+    if (deal.organizerId !== request.auth.uid) {
+      throw new HttpsError('permission-denied', 'Only the deal organiser can lock the deal.')
+    }
 
-  // Can only lock early once the minimum buyer threshold is met
-  if (deal.currentBuyers < deal.minBuyers) {
-    throw new HttpsError(
-      'failed-precondition',
-      `Need at least ${deal.minBuyers} buyers to lock. Currently at ${deal.currentBuyers}.`
-    )
-  }
+    if (deal.status !== 'open') {
+      throw new HttpsError('failed-precondition', `This deal is already ${deal.status}.`)
+    }
 
-  await dealRef.update({ status: 'locked' })
+    // Can only lock early once the minimum buyer threshold is met
+    if (deal.currentBuyers < deal.minBuyers) {
+      throw new HttpsError(
+        'failed-precondition',
+        `Need at least ${deal.minBuyers} buyers to lock. Currently at ${deal.currentBuyers}.`
+      )
+    }
+
+    t.update(dealRef, { status: 'locked' })
+  })
 
   // Return value is available to the client but not required
   return { success: true }

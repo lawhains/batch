@@ -26,7 +26,18 @@ service cloud.firestore {
         && request.resource.data.pricePerPerson > 0
         && request.resource.data.minBuyers >= 2
         && request.resource.data.title is string
-        && request.resource.data.title.size() > 0;
+        && request.resource.data.title.size() > 0
+        // deadline must be a timestamp in the future — without this, a deal could be
+        // created already expired (deadline in the past) or with no deadline at all,
+        // which would make it immune to the expireDeals sweep
+        && request.resource.data.deadline is timestamp
+        && request.resource.data.deadline > request.time
+        // maxBuyers is optional (null = unlimited), but when set it must be at least
+        // minBuyers — otherwise the deal can never lock (it would hit capacity before
+        // reaching the viability threshold)
+        && (request.resource.data.maxBuyers == null
+            || (request.resource.data.maxBuyers is int
+                && request.resource.data.maxBuyers >= request.resource.data.minBuyers));
 
       // Organiser can update their own deal, but three fields are off-limits from the client:
       //   status       — owned by Cloud Functions (onDealUpdated, expireDeals)
@@ -80,10 +91,13 @@ service cloud.firestore {
         && request.resource.data.status == 'pending';
 
       // Users can delete their own commitment to leave a deal, but only while
-      // the deal is still open. The leave transaction enforces the open check
-      // on the deal doc — this rule just ensures you can only delete your own commitment.
+      // the deal is still open. Without the status check here, someone bypassing
+      // the client (e.g. via the REST API) could delete their commitment on a
+      // locked deal — leaving currentBuyers out of sync with actual commitment docs.
+      // get() reads the parent deal doc to enforce this server-side.
       allow delete: if request.auth != null
-        && resource.data.userId == request.auth.uid;
+        && resource.data.userId == request.auth.uid
+        && get(/databases/$(database)/documents/deals/$(resource.data.dealId)).data.status == 'open';
 
       // No client-side updates — changing commitment status (e.g. held → charged)
       // will be handled by Cloud Functions once Stripe is integrated

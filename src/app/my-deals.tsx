@@ -14,6 +14,7 @@ import { router } from 'expo-router'
 import { auth, db } from '@/services/firebase'
 import DealCard from '@/components/DealCard'
 import type { Deal } from '@/types'
+import { mapDeal } from '@/utils/mapDeal'
 
 export default function MyDealsScreen() {
 
@@ -31,15 +32,7 @@ export default function MyDealsScreen() {
 
     const unsubscribe = onSnapshot(q,
       (snap) => {
-        const deals = snap.docs.map(doc => {
-          const data = doc.data()
-          return {
-            ...data,
-            id: doc.id,
-            deadline: data.deadline?.toDate() ?? new Date(),
-          } as Deal
-        })
-        setMyDeals(deals)
+        setMyDeals(snap.docs.map(mapDeal))
         setLoadingOrganized(false)
       },
       () => setLoadingOrganized(false)
@@ -63,18 +56,22 @@ export default function MyDealsScreen() {
         }
 
         try {
-          // documentId() lets us query by doc ID with 'in' — avoids N individual getDoc calls
-          const dealSnap = await getDocs(
-            query(collection(db, 'deals'), where(documentId(), 'in', dealIds))
+          // Firestore 'in' queries cap at 30 values. If a user has joined 31+ deals,
+          // a single query would fail. Chunk the IDs into groups of 30 and run
+          // parallel queries so we stay under the limit at any scale.
+          const FIRESTORE_IN_LIMIT = 30
+          const chunks: string[][] = []
+          for (let i = 0; i < dealIds.length; i += FIRESTORE_IN_LIMIT) {
+            chunks.push(dealIds.slice(i, i + FIRESTORE_IN_LIMIT))
+          }
+
+          const snapshots = await Promise.all(
+            chunks.map(chunk =>
+              getDocs(query(collection(db, 'deals'), where(documentId(), 'in', chunk)))
+            )
           )
-          const deals = dealSnap.docs.map(doc => {
-            const data = doc.data()
-            return {
-              ...data,
-              id: doc.id,
-              deadline: data.deadline?.toDate() ?? new Date(),
-            } as Deal
-          })
+
+          const deals = snapshots.flatMap(snap => snap.docs.map(mapDeal))
           setJoinedDeals(deals)
         } catch {
           // silently fail — the section stays empty rather than crashing the screen
