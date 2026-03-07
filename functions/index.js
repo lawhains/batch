@@ -1,14 +1,22 @@
 // Cloud Functions for Batch
 //
+// joinDeal      — Callable. Joins a user to a deal: creates commitment doc + increments
+//                 currentBuyers atomically. Server-side because Stripe PaymentIntent creation
+//                 (hold funds) will live here once payments are integrated.
+//
+// leaveDeal     — Callable. Removes a user from an open deal: deletes commitment doc +
+//                 decrements currentBuyers atomically. Server-side because Stripe PaymentIntent
+//                 cancellation will live here once payments are integrated.
+//
+// lockDeal      — Callable. Lets an organiser lock their deal early once minBuyers is met.
+//                 Stripe payment capture for all commitments will live here.
+//
 // onDealUpdated — Firestore trigger that locks a deal when maxBuyers is hit (capacity full).
 //                 minBuyers is a viability threshold checked at the deadline, not a lock trigger.
-//                 Runs server-side so the lock can't be bypassed by hitting the REST API directly.
 //
-// expireDeals   — Scheduled function (hourly) that sweeps for deals whose deadline has passed.
+// expireDeals   — Scheduled function (hourly) that sweeps for past-deadline deals.
 //                 Locks them if minBuyers was met, expires them if not.
-//
-// lockDeal      — Callable HTTPS function. Lets an organiser lock their deal early once
-//                 minBuyers is met, without waiting for the deadline.
+//                 Stripe: capture payments on lock, cancel on expire.
 //
 // Locking logic summary:
 //   currentBuyers hits maxBuyers           -> lock immediately (onDealUpdated)
@@ -16,14 +24,14 @@
 //   deadline passes + currentBuyers >= min -> lock (expireDeals)
 //   deadline passes + currentBuyers < min  -> expire (expireDeals)
 //
-// Both functions use the Firebase Admin SDK, which bypasses Firestore security rules —
-// that's intentional here since these are trusted server operations, not client requests.
+// All functions use the Firebase Admin SDK, which bypasses Firestore security rules —
+// that's intentional since these are trusted server operations, not client requests.
 
 const { onDocumentUpdated } = require('firebase-functions/v2/firestore')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
 const { onCall, HttpsError } = require('firebase-functions/v2/https')
 const { initializeApp } = require('firebase-admin/app')
-const { getFirestore } = require('firebase-admin/firestore')
+const { getFirestore, Timestamp } = require('firebase-admin/firestore')
 const { setGlobalOptions } = require('firebase-functions')
 
 initializeApp()
@@ -164,5 +172,147 @@ exports.lockDeal = onCall(async (request) => {
   })
 
   // Return value is available to the client but not required
+  return { success: true }
+})
+
+// ── joinDeal ────────────────────────────────────────────────────────────────
+//
+// Callable HTTPS function — adds a user to a deal by creating a commitment doc
+// and incrementing currentBuyers inside a single transaction.
+//
+// This lives server-side (not as a client Firestore transaction) because:
+//   1. Stripe PaymentIntent creation (authorize/hold funds) must happen server-side
+//   2. Centralising the join logic here means the client is a simple function call,
+//      and all validation + atomicity is in one place
+//   3. Firestore rules can be tighter — the client never writes commitments or
+//      touches currentBuyers directly
+//
+// The commitment doc ID follows the `${dealId}_${userId}` convention, which
+// naturally prevents double-joining (the transaction checks for existence).
+exports.joinDeal = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'You must be signed in to join a deal.')
+  }
+
+  const { dealId } = request.data
+  if (!dealId || typeof dealId !== 'string') {
+    throw new HttpsError('invalid-argument', 'A valid dealId is required.')
+  }
+
+  const uid = request.auth.uid
+  const dealRef = db.collection('deals').doc(dealId)
+  // Predictable ID: prevents double-join without needing a query
+  const commitmentRef = db.collection('commitments').doc(`${dealId}_${uid}`)
+
+  await db.runTransaction(async (t) => {
+    const dealSnap = await t.get(dealRef)
+    const commitmentSnap = await t.get(commitmentRef)
+
+    if (!dealSnap.exists) {
+      throw new HttpsError('not-found', 'Deal not found.')
+    }
+
+    if (commitmentSnap.exists) {
+      throw new HttpsError('already-exists', 'You have already joined this deal.')
+    }
+
+    const deal = dealSnap.data()
+
+    if (deal.status !== 'open') {
+      throw new HttpsError('failed-precondition', 'This deal is no longer open.')
+    }
+
+    // Server-side deadline guard: closes the ~59-min window between the deadline
+    // passing and the expireDeals sweep running. The client also checks this,
+    // but a determined user could bypass the client.
+    if (deal.deadline.toDate() <= new Date()) {
+      throw new HttpsError('failed-precondition', 'This deal\'s deadline has passed.')
+    }
+
+    // Capacity check — only applies when maxBuyers is set
+    if (deal.maxBuyers !== undefined && deal.maxBuyers !== null
+        && deal.currentBuyers >= deal.maxBuyers) {
+      throw new HttpsError('failed-precondition', 'This deal has reached its maximum buyers.')
+    }
+
+    // Create the commitment doc.
+    // When Stripe is integrated, the PaymentIntent will be created before this
+    // and its ID stored here as paymentIntentId.
+    t.set(commitmentRef, {
+      dealId,
+      userId: uid,
+      joinedAt: Timestamp.now(),
+      status: 'pending',
+    })
+
+    t.update(dealRef, { currentBuyers: deal.currentBuyers + 1 })
+  })
+
+  return { success: true }
+})
+
+// ── leaveDeal ───────────────────────────────────────────────────────────────
+//
+// Callable HTTPS function — removes a user from an open deal by deleting their
+// commitment doc and decrementing currentBuyers inside a single transaction.
+//
+// Server-side for the same reasons as joinDeal:
+//   1. Stripe PaymentIntent cancellation must happen server-side
+//   2. Single source of truth for leave validation and atomicity
+//   3. Client never touches currentBuyers or commitment docs directly
+//
+// Once the deal is locked or expired, leaving is blocked — the user's commitment
+// (and eventual payment) is final.
+exports.leaveDeal = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'You must be signed in to leave a deal.')
+  }
+
+  const { dealId } = request.data
+  if (!dealId || typeof dealId !== 'string') {
+    throw new HttpsError('invalid-argument', 'A valid dealId is required.')
+  }
+
+  const uid = request.auth.uid
+  const dealRef = db.collection('deals').doc(dealId)
+  const commitmentRef = db.collection('commitments').doc(`${dealId}_${uid}`)
+
+  await db.runTransaction(async (t) => {
+    const dealSnap = await t.get(dealRef)
+    const commitmentSnap = await t.get(commitmentRef)
+
+    if (!dealSnap.exists) {
+      throw new HttpsError('not-found', 'Deal not found.')
+    }
+
+    if (!commitmentSnap.exists) {
+      throw new HttpsError('not-found', 'You are not in this deal.')
+    }
+
+    // Verify the commitment belongs to the caller — defence in depth,
+    // since the doc ID convention already ties it to the user
+    const commitment = commitmentSnap.data()
+    if (commitment.userId !== uid) {
+      throw new HttpsError('permission-denied', 'You can only leave your own commitments.')
+    }
+
+    const deal = dealSnap.data()
+
+    if (deal.status !== 'open') {
+      throw new HttpsError('failed-precondition', 'This deal has already locked — you can\'t leave now.')
+    }
+
+    // Same server-side deadline guard as joinDeal
+    if (deal.deadline.toDate() <= new Date()) {
+      throw new HttpsError('failed-precondition', 'This deal\'s deadline has passed.')
+    }
+
+    // When Stripe is integrated, cancel the PaymentIntent here before deleting
+    // the commitment: stripe.paymentIntents.cancel(commitment.paymentIntentId)
+
+    t.delete(commitmentRef)
+    t.update(dealRef, { currentBuyers: deal.currentBuyers - 1 })
+  })
+
   return { success: true }
 })

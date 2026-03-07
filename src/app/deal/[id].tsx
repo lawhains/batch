@@ -1,7 +1,12 @@
 // Deal detail screen — shows full info about a single deal and handles three actions:
-//   Join  — Firestore transaction (commitment doc + currentBuyers increment)
-//   Leave — Firestore transaction (delete commitment + currentBuyers decrement), open deals only
-//   Lock  — callable Cloud Function (organiser only, once minBuyers is met)
+//   Join  — calls joinDeal Cloud Function (creates commitment + increments currentBuyers)
+//   Leave — calls leaveDeal Cloud Function (deletes commitment + decrements currentBuyers)
+//   Lock  — calls lockDeal Cloud Function (organiser only, once minBuyers is met)
+//
+// All three actions are Cloud Functions rather than client-side Firestore transactions.
+// This architecture is required for Stripe integration — join creates a PaymentIntent (hold),
+// leave cancels it, and lock captures all of them. Keeping the logic server-side means the
+// client is a simple function call and all validation + atomicity is in one place.
 //
 // Two real-time listeners run in parallel:
 //   1. The deal doc        — keeps buyer count, status, and deadline live
@@ -10,7 +15,7 @@
 
 import { useState, useEffect } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView } from 'react-native'
-import { doc, onSnapshot, runTransaction, Timestamp } from 'firebase/firestore'
+import { doc, onSnapshot } from 'firebase/firestore'
 import { httpsCallable } from 'firebase/functions'
 import { FirebaseError } from 'firebase/app'
 import { useLocalSearchParams, router } from 'expo-router'
@@ -68,43 +73,19 @@ export default function DealDetailScreen() {
   }, [id, uid])
 
   // ── Join ──────────────────────────────────────────────────────────────────
+  // Calls the joinDeal Cloud Function — all validation, commitment creation, and
+  // currentBuyers increment happen server-side in a single atomic transaction.
+  // The onSnapshot listeners pick up changes automatically after the function returns.
   const handleJoin = async () => {
-    if (!deal) return
     setJoining(true)
     setError('')
 
     try {
-      const dealRef = doc(db, 'deals', id)
-      const commitmentRef = doc(db, 'commitments', `${id}_${uid}`)
-
-      await runTransaction(db, async (transaction) => {
-        const dealSnap = await transaction.get(dealRef)
-        const commitmentSnap = await transaction.get(commitmentRef)
-
-        if (!dealSnap.exists()) throw new Error('deal-not-found')
-        if (commitmentSnap.exists()) throw new Error('already-joined')
-
-        const data = dealSnap.data()
-        if (data.status !== 'open') throw new Error('deal-closed')
-        if (data.maxBuyers !== undefined && data.currentBuyers >= data.maxBuyers) {
-          throw new Error('deal-full')
-        }
-
-        transaction.set(commitmentRef, {
-          dealId: id,
-          userId: uid,
-          joinedAt: Timestamp.now(),
-          status: 'pending',
-        })
-        transaction.update(dealRef, { currentBuyers: data.currentBuyers + 1 })
-      })
-
+      const joinDeal = httpsCallable(functions, 'joinDeal')
+      await joinDeal({ dealId: id })
     } catch (e) {
-      if (e instanceof Error) {
-        if (e.message === 'already-joined') setError('You have already joined this deal.')
-        else if (e.message === 'deal-closed') setError('This deal is no longer open.')
-        else if (e.message === 'deal-full') setError('This deal has reached its maximum buyers.')
-        else setError('Failed to join. Please try again.')
+      if (e instanceof FirebaseError) {
+        setError(e.message)
       } else {
         setError('Failed to join. Please try again.')
       }
@@ -114,38 +95,19 @@ export default function DealDetailScreen() {
   }
 
   // ── Leave ─────────────────────────────────────────────────────────────────
-  // Mirror of joining — deletes the commitment and decrements currentBuyers atomically.
-  // Only possible while the deal is still open (once locked, you're committed).
+  // Calls the leaveDeal Cloud Function — deletes the commitment and decrements
+  // currentBuyers atomically, server-side. When Stripe is added, PaymentIntent
+  // cancellation will happen inside the same function.
   const handleLeave = async () => {
-    if (!deal) return
     setLeaving(true)
     setError('')
 
     try {
-      const dealRef = doc(db, 'deals', id)
-      const commitmentRef = doc(db, 'commitments', `${id}_${uid}`)
-
-      await runTransaction(db, async (transaction) => {
-        const dealSnap = await transaction.get(dealRef)
-        const commitmentSnap = await transaction.get(commitmentRef)
-
-        if (!dealSnap.exists()) throw new Error('deal-not-found')
-        if (!commitmentSnap.exists()) throw new Error('not-joined')
-
-        const data = dealSnap.data()
-        // Double-check inside the transaction — the deal could have locked
-        // between the user tapping Leave and this read
-        if (data.status !== 'open') throw new Error('deal-locked')
-
-        transaction.delete(commitmentRef)
-        transaction.update(dealRef, { currentBuyers: data.currentBuyers - 1 })
-      })
-
+      const leaveDeal = httpsCallable(functions, 'leaveDeal')
+      await leaveDeal({ dealId: id })
     } catch (e) {
-      if (e instanceof Error) {
-        if (e.message === 'deal-locked') setError('This deal has already locked — you can\'t leave now.')
-        else if (e.message === 'not-joined') setError('You are not in this deal.')
-        else setError('Failed to leave. Please try again.')
+      if (e instanceof FirebaseError) {
+        setError(e.message)
       } else {
         setError('Failed to leave. Please try again.')
       }

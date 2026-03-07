@@ -39,37 +39,22 @@ service cloud.firestore {
             || (request.resource.data.maxBuyers is int
                 && request.resource.data.maxBuyers >= request.resource.data.minBuyers));
 
-      // Organiser can update their own deal, but three fields are off-limits from the client:
-      //   status       — owned by Cloud Functions (onDealUpdated, expireDeals)
-      //   currentBuyers — owned by the joiner update rule below
-      //   organizerId  — immutable after creation
-      // The Admin SDK used by Cloud Functions bypasses these rules entirely, so
-      // function-driven updates are unaffected by this restriction.
+      // Organiser can update their own deal's editable fields (e.g. title, pricePerPerson).
+      // Four fields are off-limits from the client:
+      //   status        — owned by Cloud Functions (onDealUpdated, expireDeals, lockDeal)
+      //   currentBuyers — owned by Cloud Functions (joinDeal, leaveDeal)
+      //   organizerId   — immutable after creation
+      //   deadline      — immutable after creation (changing it would break the expiry sweep)
+      // The Admin SDK used by Cloud Functions bypasses these rules entirely.
       allow update: if request.auth.uid == resource.data.organizerId
         && !request.resource.data.diff(resource.data).affectedKeys()
-            .hasAny(['status', 'currentBuyers', 'organizerId']);
+            .hasAny(['status', 'currentBuyers', 'organizerId', 'deadline']);
 
-      // Leaving a deal: mirror of joining — decrement currentBuyers by exactly 1 on an open deal.
-      // The leave transaction also verifies the commitment exists, but rules can't check
-      // cross-collection state, so this just enforces the field-level constraint.
-      allow update: if request.auth != null
-        && resource.data.status == 'open'
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentBuyers'])
-        && request.resource.data.currentBuyers == resource.data.currentBuyers - 1
-        && resource.data.currentBuyers > 0;
-
-      // Joining a deal: any authenticated user can increment currentBuyers by exactly 1,
-      // but only on an open deal and only touching that one field.
-      // The commitment doc (below) prevents double-joining; the transaction in the client
-      // ensures both writes succeed or neither does.
-      // The maxBuyers check ensures no one can join past the cap even via the REST API
-      // (the client enforces this too, but rules are the real enforcement layer).
-      allow update: if request.auth != null
-        && resource.data.status == 'open'
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentBuyers'])
-        && request.resource.data.currentBuyers == resource.data.currentBuyers + 1
-        && (resource.data.maxBuyers == null
-            || resource.data.currentBuyers < resource.data.maxBuyers);
+      // Join and leave updates (currentBuyers increment/decrement) are handled
+      // exclusively by the joinDeal and leaveDeal Cloud Functions via Admin SDK.
+      // No client-side update rules are needed for these operations — this is more
+      // secure than the previous approach because the server enforces all validation
+      // (status, deadline, maxBuyers, double-join prevention) atomically.
     }
 
     // Commitments
@@ -81,26 +66,13 @@ service cloud.firestore {
       allow read: if request.auth != null
         && (resource == null || resource.data.userId == request.auth.uid);
 
-      // Creating a commitment: userId must match auth uid, and the doc ID must follow
-      // the `{dealId}_{userId}` convention — this is what naturally prevents a user
-      // from joining the same deal twice (the second create would fail with ALREADY_EXISTS)
-      allow create: if request.auth != null
-        && request.resource.data.userId == request.auth.uid
-        && request.resource.data.dealId is string
-        && commitmentId == request.resource.data.dealId + '_' + request.auth.uid
-        && request.resource.data.status == 'pending';
-
-      // Users can delete their own commitment to leave a deal, but only while
-      // the deal is still open. Without the status check here, someone bypassing
-      // the client (e.g. via the REST API) could delete their commitment on a
-      // locked deal — leaving currentBuyers out of sync with actual commitment docs.
-      // get() reads the parent deal doc to enforce this server-side.
-      allow delete: if request.auth != null
-        && resource.data.userId == request.auth.uid
-        && get(/databases/$(database)/documents/deals/$(resource.data.dealId)).data.status == 'open';
-
-      // No client-side updates — changing commitment status (e.g. held → charged)
-      // will be handled by Cloud Functions once Stripe is integrated
+      // No client-side create, update, or delete.
+      // All commitment lifecycle operations are handled by Cloud Functions:
+      //   joinDeal  — creates commitment doc + increments deal.currentBuyers
+      //   leaveDeal — deletes commitment doc + decrements deal.currentBuyers
+      // This is required for Stripe integration (PaymentIntent creation/cancellation)
+      // and provides stronger security than client-side rules — the server validates
+      // everything atomically in a single transaction.
     }
   }
 }
