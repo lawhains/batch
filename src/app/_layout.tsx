@@ -1,6 +1,8 @@
-// Root layout — two responsibilities:
+// Root layout — three responsibilities:
 //   1. Auth guard: watches Firebase auth state and redirects to the right screen
 //   2. Navigation shell: defines the Stack navigator and registers all screens
+//   3. Stripe context: wraps the entire app in StripeProvider so any screen can
+//      use the Payment Sheet without prop-drilling
 //
 // The guard lives here so it runs across the entire app automatically —
 // no individual screen needs to handle its own redirect logic
@@ -9,6 +11,7 @@ import { useEffect, useState } from 'react'
 import { Stack, useRouter, useSegments } from 'expo-router'
 import { onAuthStateChanged } from 'firebase/auth'
 import type { User } from 'firebase/auth'
+import { StripeProvider } from '@stripe/stripe-react-native'
 import { auth } from '@/services/firebase'
 
 export default function RootLayout() {
@@ -56,16 +59,25 @@ export default function RootLayout() {
   // redirect to login fires — this is known as the "auth flash" problem.
   if (!authReady) return null
 
+  // StripeProvider must wrap the entire navigation tree so any screen can call
+  // useStripe(). The publishableKey is the test/live key prefixed with EXPO_PUBLIC_
+  // so Expo bundles it into the client build (never use the secret key here).
+  // merchantIdentifier must match the value in app.json (used for Apple Pay).
   return (
-    <Stack>
-      <Stack.Screen name="index" options={{ headerShown: false }} />
-      <Stack.Screen name="(auth)/login" options={{ headerShown: false }} />
-      <Stack.Screen name="(auth)/register" options={{ headerShown: false }} />
-      {/* Header shown here — gives a back arrow to the feed automatically */}
-      <Stack.Screen name="create-deal" options={{ title: 'New Deal' }} />
-      {/* Dynamic route — Expo Router maps deal/[id].tsx to this pattern */}
-      <Stack.Screen name="deal/[id]" options={{ title: 'Deal Details' }} />
-      <Stack.Screen name="my-deals" options={{ title: 'My Deals' }} />
-    </Stack>
+    <StripeProvider
+      publishableKey={process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY!}
+      merchantIdentifier="merchant.com.batch"
+    >
+      <Stack>
+        <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="(auth)/login" options={{ headerShown: false }} />
+        <Stack.Screen name="(auth)/register" options={{ headerShown: false }} />
+        {/* Header shown here — gives a back arrow to the feed automatically */}
+        <Stack.Screen name="create-deal" options={{ title: 'New Deal' }} />
+        {/* Dynamic route — Expo Router maps deal/[id].tsx to this pattern */}
+        <Stack.Screen name="deal/[id]" options={{ title: 'Deal Details' }} />
+        <Stack.Screen name="my-deals" options={{ title: 'My Deals' }} />
+      </Stack>
+    </StripeProvider>
   )
 }

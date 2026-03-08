@@ -1,12 +1,16 @@
 // Deal detail screen — shows full info about a single deal and handles three actions:
-//   Join  — calls joinDeal Cloud Function (creates commitment + increments currentBuyers)
-//   Leave — calls leaveDeal Cloud Function (deletes commitment + decrements currentBuyers)
-//   Lock  — calls lockDeal Cloud Function (organiser only, once minBuyers is met)
+//   Join  — Stripe Payment Sheet flow: createPaymentSheet → initPaymentSheet →
+//            presentPaymentSheet → joinDeal (with paymentIntentId)
+//   Leave — calls leaveDeal Cloud Function (cancels Stripe hold + removes commitment)
+//   Lock  — calls lockDeal Cloud Function (organiser only, once minBuyers is met,
+//            captures all held PaymentIntents)
 //
-// All three actions are Cloud Functions rather than client-side Firestore transactions.
-// This architecture is required for Stripe integration — join creates a PaymentIntent (hold),
-// leave cancels it, and lock captures all of them. Keeping the logic server-side means the
-// client is a simple function call and all validation + atomicity is in one place.
+// Join is a two-step process because the Payment Sheet needs the PaymentIntent client_secret
+// BEFORE the user sees the card form, and we only create the commitment AFTER they confirm.
+// This prevents orphaned commitments for users who abandon the Payment Sheet mid-flow.
+//
+// All three actions are Cloud Functions — Stripe calls must be server-side (secret key),
+// and centralising the logic keeps Firestore rules simple (client never writes commitments).
 //
 // Two real-time listeners run in parallel:
 //   1. The deal doc        — keeps buyer count, status, and deadline live
@@ -19,6 +23,7 @@ import { doc, onSnapshot } from 'firebase/firestore'
 import { httpsCallable } from 'firebase/functions'
 import { FirebaseError } from 'firebase/app'
 import { useLocalSearchParams, router } from 'expo-router'
+import { useStripe } from '@stripe/stripe-react-native'
 import { auth, db, functions } from '@/services/firebase'
 import type { Deal } from '@/types'
 import { mapDeal } from '@/utils/mapDeal'
@@ -27,6 +32,10 @@ export default function DealDetailScreen() {
 
   const { id } = useLocalSearchParams<{ id: string }>()
   const uid = auth.currentUser!.uid
+
+  // initPaymentSheet configures the Payment Sheet with the PI client_secret.
+  // presentPaymentSheet shows the native Stripe card UI to the user.
+  const { initPaymentSheet, presentPaymentSheet } = useStripe()
 
   const [deal, setDeal] = useState<Deal | null>(null)
   const [alreadyJoined, setAlreadyJoined] = useState(false)
@@ -73,16 +82,56 @@ export default function DealDetailScreen() {
   }, [id, uid])
 
   // ── Join ──────────────────────────────────────────────────────────────────
-  // Calls the joinDeal Cloud Function — all validation, commitment creation, and
-  // currentBuyers increment happen server-side in a single atomic transaction.
-  // The onSnapshot listeners pick up changes automatically after the function returns.
+  // Three-step Stripe Payment Sheet flow:
+  //   1. createPaymentSheet — server creates Customer, ephemeral key, and
+  //      PaymentIntent (capture_method: 'manual' = hold, not charge)
+  //   2. initPaymentSheet + presentPaymentSheet — show the native Stripe card UI
+  //   3. joinDeal — only called after the user confirms; creates the commitment
+  //      doc with the verified paymentIntentId and increments currentBuyers
+  //
+  // If the user dismisses the Payment Sheet (presentError.code === 'Canceled'),
+  // we silently exit — no error shown, no commitment created.
   const handleJoin = async () => {
     setJoining(true)
     setError('')
 
     try {
+      // Step 1: Ask the server to set up the PaymentIntent and return the
+      // client_secret we need to initialise the Payment Sheet.
+      const createPaymentSheet = httpsCallable(functions, 'createPaymentSheet')
+      const { data } = await createPaymentSheet({ dealId: id }) as {
+        data: { paymentIntent: string; paymentIntentId: string; ephemeralKey: string; customer: string }
+      }
+
+      // Step 2a: Configure the Payment Sheet with the server-provided params.
+      const { error: initError } = await initPaymentSheet({
+        paymentIntentClientSecret: data.paymentIntent,
+        customerEphemeralKeySecret: data.ephemeralKey,
+        customerId: data.customer,
+        merchantDisplayName: 'Batch',
+      })
+      if (initError) {
+        setError(initError.message)
+        return
+      }
+
+      // Step 2b: Show the native Stripe card input UI to the user.
+      const { error: presentError } = await presentPaymentSheet()
+      if (presentError) {
+        // 'Canceled' means the user dismissed the sheet — not an error, just exit quietly.
+        if (presentError.code !== 'Canceled') {
+          setError(presentError.message)
+        }
+        return
+      }
+
+      // Step 3: Payment authorized (hold placed on card). Tell the server to create
+      // the commitment. joinDeal verifies the PI metadata and status server-side
+      // before writing anything — prevents cross-deal or cross-user attacks.
       const joinDeal = httpsCallable(functions, 'joinDeal')
-      await joinDeal({ dealId: id })
+      await joinDeal({ dealId: id, paymentIntentId: data.paymentIntentId })
+
+      // The onSnapshot listener will pick up the new commitment and deal changes automatically.
     } catch (e) {
       if (e instanceof FirebaseError) {
         setError(e.message)
@@ -95,9 +144,9 @@ export default function DealDetailScreen() {
   }
 
   // ── Leave ─────────────────────────────────────────────────────────────────
-  // Calls the leaveDeal Cloud Function — deletes the commitment and decrements
-  // currentBuyers atomically, server-side. When Stripe is added, PaymentIntent
-  // cancellation will happen inside the same function.
+  // Calls the leaveDeal Cloud Function — cancels the Stripe PaymentIntent (releases
+  // the hold on the user's card), deletes the commitment doc, and decrements
+  // currentBuyers atomically, all server-side.
   const handleLeave = async () => {
     setLeaving(true)
     setError('')
@@ -118,8 +167,8 @@ export default function DealDetailScreen() {
 
   // ── Lock Deal (organiser only) ────────────────────────────────────────────
   // Calls the lockDeal Cloud Function rather than writing Firestore directly —
-  // the security rules block client-side status changes, and server-side locking
-  // is where Stripe payment capture will eventually live.
+  // the security rules block client-side status changes, and the function
+  // captures all held PaymentIntents (charges every committed buyer) server-side.
   const handleLockDeal = async () => {
     setLocking(true)
     setError('')
