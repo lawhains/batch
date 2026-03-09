@@ -300,7 +300,7 @@ exports.lockDeal = onCall({ secrets: [stripeSecret] }, async (request) => {
 //
 // This is a separate step from joinDeal because the Payment Sheet needs the
 // client_secret BEFORE the user confirms payment. The flow is:
-//   createPaymentSheet → user sees Payment Sheet → user confirms → joinDeal
+//   createPaymentSheet -> user sees Payment Sheet -> user confirms -> joinDeal
 // This prevents creating commitments for users who abandon the Payment Sheet.
 exports.createPaymentSheet = onCall({ secrets: [stripeSecret] }, async (request) => {
   if (!request.auth) {
@@ -412,6 +412,7 @@ exports.joinDeal = onCall({ secrets: [stripeSecret] }, async (request) => {
   const stripe = require('stripe')(stripeSecret.value())
 
   // ── Verify the PaymentIntent before entering the transaction ───────────
+  //
   // This ensures the PI exists, belongs to this user/deal, and the hold succeeded.
   // Done outside the transaction because Stripe calls can't participate in
   // Firestore transactions, and this is a read-only verification.
