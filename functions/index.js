@@ -1,5 +1,8 @@
 // Cloud Functions for Batch
 //
+// createDeal        — Callable. Creates a new deal after validating all fields and
+//                     enforcing a per-user active deal limit (max 10 open deals).
+//
 // createPaymentSheet — Callable. Prepares Stripe Payment Sheet params for a user
 //                      joining a deal: get-or-create Customer, ephemeral key, and
 //                      PaymentIntent with capture_method: 'manual' (hold, not charge).
@@ -288,6 +291,94 @@ exports.lockDeal = onCall({ secrets: [stripeSecret] }, async (request) => {
   await captureAllForDeal(stripe, dealId)
 
   return { success: true }
+})
+
+// ── createDeal ────────────────────────────────────────────────────────────────
+//
+// Callable HTTPS function — creates a new deal document after server-side validation.
+//
+// Deal creation runs through a Cloud Function (rather than a direct client addDoc) for
+// one key reason: the server can enforce a per-user active deal limit that Firestore
+// rules alone cannot (rules have no aggregation/count support).
+//
+// Per-user limit: max 10 open deals as organiser at once. This is generous enough that
+// a legitimate user will never hit it, but stops a compromised or malicious account
+// from flooding the platform with fake deals.
+//
+// All validation mirrors the client-side checks in create-deal.tsx (fail fast on the
+// client for UX, enforce on the server for security).
+exports.createDeal = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'You must be signed in to create a deal.')
+  }
+
+  const { title, pricePerPerson, minBuyers, maxBuyers, deadline } = request.data
+  const uid = request.auth.uid
+
+  // ── Input validation ───────────────────────────────────────────────────
+  if (!title || typeof title !== 'string' || title.trim().length === 0) {
+    throw new HttpsError('invalid-argument', 'Title is required.')
+  }
+
+  if (typeof pricePerPerson !== 'number' || pricePerPerson <= 0) {
+    throw new HttpsError('invalid-argument', 'Price per person must be greater than 0.')
+  }
+
+  if (!Number.isInteger(minBuyers) || minBuyers < 2) {
+    throw new HttpsError('invalid-argument', 'Minimum buyers must be at least 2.')
+  }
+
+  if (maxBuyers !== null && maxBuyers !== undefined) {
+    if (!Number.isInteger(maxBuyers) || maxBuyers < minBuyers) {
+      throw new HttpsError('invalid-argument', 'Maximum buyers must be at least equal to the minimum.')
+    }
+  }
+
+  // The client sends an ISO string — convert and validate server-side
+  const deadlineDate = new Date(deadline)
+  if (isNaN(deadlineDate.getTime())) {
+    throw new HttpsError('invalid-argument', 'Deadline must be a valid date.')
+  }
+  if (deadlineDate <= new Date()) {
+    throw new HttpsError('invalid-argument', 'Deadline must be in the future.')
+  }
+
+  // ── Per-user active deal limit ─────────────────────────────────────────
+  // Count how many open deals this user is already organising. This query is
+  // why deal creation lives here rather than in a direct client write — Firestore
+  // rules have no aggregation support, so count checks must be server-side.
+  const USER_DEAL_LIMIT = 10
+
+  const activeDeals = await db
+    .collection('deals')
+    .where('organizerId', '==', uid)
+    .where('status', '==', 'open')
+    .get()
+
+  if (activeDeals.size >= USER_DEAL_LIMIT) {
+    throw new HttpsError(
+      'resource-exhausted',
+      `You can have at most ${USER_DEAL_LIMIT} active deals at a time. Close or let some expire before creating more.`
+    )
+  }
+
+  // ── Create the deal ────────────────────────────────────────────────────
+  const dealData = {
+    organizerId: uid,
+    title: title.trim(),
+    pricePerPerson,
+    minBuyers,
+    currentBuyers: 0,
+    status: 'open',
+    deadline: Timestamp.fromDate(deadlineDate),
+    // Only include maxBuyers in the doc if it was provided — writing it as null or
+    // undefined would still store the key in Firestore and confuse the capacity checks
+    ...(maxBuyers != null && { maxBuyers }),
+  }
+
+  const dealRef = await db.collection('deals').add(dealData)
+
+  return { dealId: dealRef.id }
 })
 
 // ── createPaymentSheet ────────────────────────────────────────────────────────

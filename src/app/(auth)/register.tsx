@@ -4,22 +4,47 @@
 //   3. Firestore      — write a user doc at users/{uid} to match the User type in types/index.ts
 //
 // Validation runs top-to-bottom before any network calls:
-// empty fields -> password length -> passwords match -> Firebase errors
+// empty fields -> password strength -> passwords match -> Firebase errors
 
 import { useState } from 'react'
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native'
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView } from 'react-native'
 import { createUserWithEmailAndPassword, updateProfile, signOut } from 'firebase/auth'
-import { FirebaseError } from 'firebase/app' // used to narrow the catch type instead of casting to `any`
-import { doc, setDoc } from 'firebase/firestore'
+import { FirebaseError } from 'firebase/app'
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { router } from 'expo-router'
 import { auth, db } from '@/services/firebase'
+
+// ── Password strength ─────────────────────────────────────────────────────────
+// Returns the first failing rule as a user-facing string, or null if the password
+// is strong enough. Checked before any network call for instant feedback.
+//
+// Requirements (in order of check):
+//   - 8+ characters
+//   - At least one uppercase letter
+//   - At least one lowercase letter
+//   - At least one number
+//   - At least one special character
+//
+// These rules are intentionally client-side only — Firebase's own minimum is just
+// 6 characters, so we enforce a stronger policy here. A determined attacker hitting
+// the API directly would get past this check, but they'd still hit rate limiting and
+// can't create accounts with weak passwords through the app.
+function getPasswordError(password: string): string | null {
+  if (password.length < 8)          return 'Must be at least 8 characters'
+  if (!/[A-Z]/.test(password))      return 'Must contain an uppercase letter'
+  if (!/[a-z]/.test(password))      return 'Must contain a lowercase letter'
+  if (!/[0-9]/.test(password))      return 'Must contain a number'
+  if (!/[^A-Za-z0-9]/.test(password)) return 'Must contain a special character (e.g. !@#$%)'
+  return null
+}
 
 export default function RegisterScreen() {
 
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('') // catches typos before the user gets locked out
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [agreedToTos, setAgreedToTos] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -30,89 +55,69 @@ export default function RegisterScreen() {
     const trimmedName = name.trim()
     const trimmedEmail = email.trim()
 
-    // Check everything is filled before touching the network
     if (!trimmedName || !trimmedEmail || !password || !confirmPassword) {
       setError('Please fill in all fields')
       return
     }
 
-    // Enforce a minimum password length client-side so the user gets
-    // instant feedback rather than waiting on a Firebase rejection
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters')
+    // Check password strength before anything else
+    const passwordError = getPasswordError(password)
+    if (passwordError) {
+      setError(passwordError)
       return
     }
 
-    // Catch a mismatched confirm password before we even try to create the account
     if (password !== confirmPassword) {
       setError('Passwords do not match')
       return
     }
 
+    if (!agreedToTos) {
+      setError('You must agree to the Terms of Service to create an account')
+      return
+    }
+
     setLoading(true)
 
-    // Track whether the Auth step succeeded so we can clean up if a later step fails.
-    // If we don't do this and e.g. the Firestore write throws, the user would be silently
-    // signed in but stuck on this screen — and retrying would hit auth/email-already-in-use.
     let authSucceeded = false
 
     try {
-      // Step 1: Create the Firebase Auth user.
-      // This gives us a uid we can use as the Firestore document ID,
-      // and also signs the user in automatically on success.
       const userCredential = await createUserWithEmailAndPassword(auth, trimmedEmail, password)
       const user = userCredential.user
       authSucceeded = true
 
-      // Step 2: Set the display name on the Auth profile.
-      // Without this, user.displayName would be null everywhere in the app.
       await updateProfile(user, { displayName: trimmedName })
 
-      // Step 3: Write a matching document to Firestore.
-      // We use the Firebase Auth uid as the document ID so we can always
-      // look up a user's profile with doc(db, 'users', uid).
-      // This mirrors the User interface defined in types/index.ts.
       await setDoc(doc(db, 'users', user.uid), {
         id: user.uid,
         displayName: trimmedName,
         email: trimmedEmail,
-        // avatarUrl is optional in the User type, so we leave it out for now
+        // Record TOS agreement with a server-side timestamp so there's an
+        // auditable record of when they accepted — important for a money-handling app
+        agreedToTos: true,
+        agreedToTosAt: serverTimestamp(),
       })
 
-      // All three steps succeeded — send them to the app
       router.replace('/')
 
     } catch (e) {
-      // If Auth already created the user before the error occurred, sign them out
-      // so they land back at login in a clean state rather than being silently
-      // authenticated with incomplete profile data
       if (authSucceeded) {
-        await signOut(auth).catch(() => {}) // best-effort — ignore if this also fails
+        await signOut(auth).catch(() => {})
       }
 
-      // Narrowing to FirebaseError gives us a typed e.code rather than casting
-      // the whole error to `any`, which would bypass TypeScript's type system
       if (e instanceof FirebaseError) {
         if (e.code === 'auth/email-already-in-use') {
-          // Safe to be specific here — an attacker could discover this just by trying to log in
           setError('An account with this email already exists')
-
         } else if (e.code === 'auth/invalid-email') {
           setError('Please enter a valid email address')
-
         } else if (e.code === 'auth/weak-password') {
-          // Firebase's own minimum is 6 characters — this fires if somehow
-          // our client-side 8-char check is bypassed
           setError('Password is too weak. Please choose a stronger one.')
-
         } else if (e.code === 'auth/network-request-failed') {
           setError('Network error. Check your connection and try again.')
-
         } else {
           setError('Something went wrong. Please try again.')
         }
       } else {
-        // Non-Firebase error — covers unexpected throws from Firestore or updateProfile
         setError('Something went wrong. Please try again.')
       }
 
@@ -122,58 +127,93 @@ export default function RegisterScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    // ScrollView so the form stays accessible when the keyboard is up on smaller phones
+    <ScrollView
+      contentContainerStyle={styles.container}
+      keyboardShouldPersistTaps="handled"
+    >
+
+      {/* App identity */}
+      <Text style={styles.appName}>Batch</Text>
       <Text style={styles.title}>Create Account</Text>
 
+      <Text style={styles.label}>Name</Text>
       <TextInput
         style={styles.input}
-        placeholder="Name"
+        placeholder="Your full name"
+        placeholderTextColor="#999"
         value={name}
         onChangeText={setName}
-        autoCapitalize="words"  // capitalises each word — correct for a name field ("John Smith" not "John smith")
+        autoCapitalize="words"
         autoComplete="name"
         autoCorrect={false}
         editable={!loading}
       />
 
+      <Text style={styles.label}>Email</Text>
       <TextInput
         style={styles.input}
-        placeholder="Email"
+        placeholder="you@example.com"
+        placeholderTextColor="#999"
         value={email}
         onChangeText={setEmail}
         autoCapitalize="none"
-        autoCorrect={false}       // stops autocorrect silently changing the email
+        autoCorrect={false}
         keyboardType="email-address"
         autoComplete="email"
         editable={!loading}
       />
 
+      <Text style={styles.label}>Password</Text>
+      <Text style={styles.hint}>8+ characters, uppercase, lowercase, number, special character</Text>
       <TextInput
         style={styles.input}
-        placeholder="Password"
+        placeholder="Create a strong password"
+        placeholderTextColor="#999"
         value={password}
         onChangeText={setPassword}
         secureTextEntry
-        autoComplete="new-password" // "new" (not "current") tells the OS this is registration,
-                                    // which prompts password managers to save rather than autofill
+        autoComplete="new-password"
         editable={!loading}
       />
 
+      <Text style={styles.label}>Confirm Password</Text>
       <TextInput
         style={styles.input}
-        placeholder="Confirm Password"
+        placeholder="Re-enter your password"
+        placeholderTextColor="#999"
         value={confirmPassword}
         onChangeText={setConfirmPassword}
         secureTextEntry
         editable={!loading}
       />
 
+      {/* TOS agreement — stored on the user doc with a timestamp for audit purposes.
+          The actual TOS and Privacy Policy documents should be drafted with legal
+          counsel before the app goes live, since Batch handles real payments. */}
+      <TouchableOpacity
+        style={styles.checkboxRow}
+        onPress={() => setAgreedToTos(!agreedToTos)}
+        disabled={loading}
+        activeOpacity={0.7}
+      >
+        <View style={[styles.checkbox, agreedToTos && styles.checkboxChecked]}>
+          {agreedToTos && <Text style={styles.checkmark}>✓</Text>}
+        </View>
+        <Text style={styles.checkboxLabel}>
+          I agree to the{' '}
+          <Text style={styles.checkboxLink}>Terms of Service</Text>
+          {' '}and{' '}
+          <Text style={styles.checkboxLink}>Privacy Policy</Text>
+        </Text>
+      </TouchableOpacity>
+
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       <TouchableOpacity
-        style={[styles.button, loading && styles.buttonDisabled]}
+        style={[styles.button, (loading || !agreedToTos) && styles.buttonDisabled]}
         onPress={handleRegister}
-        disabled={loading}
+        disabled={loading || !agreedToTos}
       >
         {loading
           ? <ActivityIndicator color="#fff" />
@@ -181,7 +221,6 @@ export default function RegisterScreen() {
         }
       </TouchableOpacity>
 
-      {/* push() so the user can go back to login if they already have an account */}
       <TouchableOpacity
         style={styles.link}
         onPress={() => router.push('/login')}
@@ -189,28 +228,87 @@ export default function RegisterScreen() {
       >
         <Text style={styles.linkText}>Already have an account? Log in</Text>
       </TouchableOpacity>
-    </View>
+
+    </ScrollView>
   )
 }
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
     padding: 24,
-    justifyContent: 'center',
+    paddingTop: 60,
+    paddingBottom: 40,
+    backgroundColor: '#fff',
+  },
+  appName: {
+    fontSize: 40,
+    fontWeight: '800',
+    color: '#FF6B35',
+    marginBottom: 4,
   },
   title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    marginBottom: 32,
+    fontSize: 22,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 28,
+  },
+  label: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#555',
+    marginBottom: 5,
+  },
+  hint: {
+    fontSize: 12,
+    color: '#999',
+    marginBottom: 6,
+    marginTop: -2,
   },
   input: {
     borderWidth: 1,
     borderColor: '#ccc',
     borderRadius: 8,
     padding: 14,
-    marginBottom: 14,
+    marginBottom: 18,
     fontSize: 16,
+    color: '#000',
+    backgroundColor: '#fff',
+  },
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 18,
+    gap: 10,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderWidth: 2,
+    borderColor: '#ccc',
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+    flexShrink: 0,
+  },
+  checkboxChecked: {
+    backgroundColor: '#FF6B35',
+    borderColor: '#FF6B35',
+  },
+  checkmark: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  checkboxLabel: {
+    fontSize: 14,
+    color: '#333',
+    flex: 1,
+    lineHeight: 20,
+  },
+  checkboxLink: {
+    color: '#FF6B35',
+    fontWeight: '600',
   },
   error: {
     color: '#cc0000',
@@ -223,10 +321,10 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 16,
     alignItems: 'center',
-    marginTop: 8,
+    marginTop: 4,
   },
   buttonDisabled: {
-    backgroundColor: '#FF6B3580', // same orange at ~50% opacity
+    backgroundColor: '#FF6B3580',
   },
   buttonText: {
     color: '#fff',

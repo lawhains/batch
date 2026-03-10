@@ -13,31 +13,10 @@ service cloud.firestore {
       // Anyone can browse deals — no auth required to see what's available
       allow read: if true;
 
-      // On creation, enforce that the incoming data is structurally valid.
-      // This matters because client-side validation can be bypassed by anyone
-      // hitting the Firestore REST API directly — the rules are the real enforcement.
-      allow create: if request.auth != null
-        // organizerId must match the person making the request — prevents impersonation
-        && request.resource.data.organizerId == request.auth.uid
-        // new deals must always start open with zero buyers
-        && request.resource.data.status == 'open'
-        && request.resource.data.currentBuyers == 0
-        // basic field sanity checks
-        && request.resource.data.pricePerPerson > 0
-        && request.resource.data.minBuyers >= 2
-        && request.resource.data.title is string
-        && request.resource.data.title.size() > 0
-        // deadline must be a timestamp in the future — without this, a deal could be
-        // created already expired (deadline in the past) or with no deadline at all,
-        // which would make it immune to the expireDeals sweep
-        && request.resource.data.deadline is timestamp
-        && request.resource.data.deadline > request.time
-        // maxBuyers is optional (null = unlimited), but when set it must be at least
-        // minBuyers — otherwise the deal can never lock (it would hit capacity before
-        // reaching the viability threshold)
-        && (request.resource.data.maxBuyers == null
-            || (request.resource.data.maxBuyers is int
-                && request.resource.data.maxBuyers >= request.resource.data.minBuyers));
+      // Deal creation is handled exclusively by the createDeal Cloud Function via Admin SDK.
+      // Moving creation server-side lets the function enforce a per-user active deal limit
+      // (Firestore rules have no aggregation support, so count checks must be server-side).
+      // No client-side create rule is needed — the Admin SDK bypasses rules entirely.
 
       // Organiser can update their own deal's editable fields (e.g. title, pricePerPerson).
       // Four fields are off-limits from the client:
@@ -49,12 +28,6 @@ service cloud.firestore {
       allow update: if request.auth.uid == resource.data.organizerId
         && !request.resource.data.diff(resource.data).affectedKeys()
             .hasAny(['status', 'currentBuyers', 'organizerId', 'deadline']);
-
-      // Join and leave updates (currentBuyers increment/decrement) are handled
-      // exclusively by the joinDeal and leaveDeal Cloud Functions via Admin SDK.
-      // No client-side update rules are needed for these operations — this is more
-      // secure than the previous approach because the server enforces all validation
-      // (status, deadline, maxBuyers, double-join prevention) atomically.
     }
 
     // Commitments

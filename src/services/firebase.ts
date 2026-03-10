@@ -4,6 +4,7 @@
 // In development, set EXPO_PUBLIC_USE_EMULATOR=true in .env to route traffic through
 // the local Firebase Emulator Suite instead of production.
 
+import { Platform } from 'react-native'
 import { initializeApp } from 'firebase/app'
 import { getAuth, connectAuthEmulator } from 'firebase/auth'
 import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore'
@@ -21,7 +22,12 @@ export const db = getFirestore(app)
 export const functions = getFunctions(app)
 
 if (process.env.EXPO_PUBLIC_USE_EMULATOR === 'true') {
-  connectAuthEmulator(auth, 'http://localhost:9099', { disableWarnings: true })
-  connectFirestoreEmulator(db, 'localhost', 8080)
-  connectFunctionsEmulator(functions, 'localhost', 5001)
+  // Android emulator runs in its own VM — 'localhost' refers to the emulator itself,
+  // not the host machine. 10.0.2.2 is Android's special alias for the host's localhost.
+  // iOS simulator shares the host's network stack, so plain 'localhost' works there.
+  const host = Platform.OS === 'android' ? '10.0.2.2' : 'localhost'
+
+  connectAuthEmulator(auth, `http://${host}:9099`, { disableWarnings: true })
+  connectFirestoreEmulator(db, host, 8080)
+  connectFunctionsEmulator(functions, host, 5001)
 }
