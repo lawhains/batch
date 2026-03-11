@@ -2,7 +2,7 @@
 
 A collaborative bulk-buying app, currently in active development. Built as my first full-stack project to understand how real applications are structured from the client all the way to the cloud.
 
-**Stack:** React Native (Expo) · Firebase Auth · Firestore · Cloud Functions · Stripe · TypeScript
+**Stack:** React Native (Expo) - Firebase Auth - Firestore - Cloud Functions - Stripe - TypeScript
 
 ---
 
