@@ -8,9 +8,9 @@ A collaborative bulk-buying app, currently in active development. Built as my fi
 
 ## Why I Built This
 
-I wanted a project that forced me to make real architectural decisions, not just follow a tutorial. Batch gave me a reason to think through auth flows, NoSQL schema design, server-side security, and payment handling as connected problems rather than isolated exercises.
+I wanted a project that forced me to make real architectural decisions. Batch gave me a reason to think through auth flows, NoSQL schema design, server-side security, and payment handling as connected problems rather than isolated exercises.
 
-The idea came from a genuine frustration: bulk purchasing platforms offer better prices for high-volume orders, but coordinating a group buy manually is a mess. Batch handles that coordination (grouping buyers, tracking commitments, locking orders at deadlines, and splitting costs).
+The idea came from a genuine frustration. Bulk purchasing platforms offer better prices for high-volume orders, but coordinating a group buy manually is a mess. Batch handles that coordination (grouping buyers, tracking commitments, locking orders at deadlines, and splitting costs).
 
 ---
 
