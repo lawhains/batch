@@ -15,7 +15,7 @@ interface Props {
 
 export default function DealCard({ deal, onPress }: Props) {
   return (
-    // TouchableOpacity rather than View so the whole card is tappable — tapping anywhere
+    // TouchableOpacity rather than View so the whole card is tappable, tapping anywhere
     // on the card will navigate to the detail screen, which is the standard mobile pattern
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.75}>
 

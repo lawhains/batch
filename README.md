@@ -58,7 +58,7 @@ batch/
 └── firebase.json         # Firebase deployment config
 ```
 
----
+--- 
 
 ## Tech Stack
 
